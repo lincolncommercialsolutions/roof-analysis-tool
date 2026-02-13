@@ -211,27 +211,64 @@ def identify_manufacturers(roof_text):
         st.warning(f"Error identifying manufacturers: {e}")
         return []
 
+# Comprehensive roofing keywords for better extraction
+MATERIALS_KEYWORDS = [
+    "epdm", "tpo", "pvc", "shingle", "shingles", "tile", "tiles", "metal", "asphalt",
+    "membrane", "modified bitumen", "sbs", "app", "built-up", "bur", "polyiso"
+]
+
+COMPONENTS_KEYWORDS = [
+    "insulation", "deck", "flashing", "drainage", "underlayment", "penetration",
+    "valley", "ridge", "gutter", "coverboard", "gypsum", "securock", "parapet",
+    "drain", "cricket", "taper", "substrate", "eave", "fascia", "coping",
+    "termination bar", "sealant", "adhesive", "base sheet", "cap sheet"
+]
+
+OTHER_KEYWORDS = [
+    "slope", "warranty", "guarantee", "workmanship", "wind uplift", "hail resistance",
+    "mechanically attached", "fully adhered", "ballasted", "torch applied", "self-adhered"
+]
+
+# Preferred words for word cloud visualization
+WORDCLOUD_PREFERRED_WORDS = {
+    "roof", "roofing", "membrane", "tpo", "epdm", "pvc", "shingle", "insulation",
+    "polyiso", "flashing", "drain", "warranty", "gaf", "firestone", "carlisle",
+    "soprema", "square feet", "sq ft", "underlayment", "penetration", "parapet",
+    "adhered", "attached", "torch", "sbs", "modified bitumen", "drainage",
+    "coverboard", "deck", "slope", "valley", "ridge", "gutter", "certainteed",
+    "owens corning", "johns manville", "tremco", "iko", "atlas", "malarkey"
+}
+
 # Function to extract materials, components, and other roof-related info
 def extract_roof_details(roof_text):
     if not roof_text or nlp is None:
         return {"materials": [], "components": [], "other": []}
     try:
-        materials_keywords = ["epdm", "tpo", "pvc", "shingle", "shingles", "tile", "metal", "asphalt", "membrane"]
-        components_keywords = ["insulation", "deck", "flashing", "drainage", "underlayment", "penetration", "valley", "ridge", "gutter"]
-        other_keywords = ["slope"]
-        
         doc = nlp(roof_text)
         materials = set()
         components = set()
         other = set()
+        
+        # Check both individual tokens and phrases
+        text_lower = roof_text.lower()
         for token in doc:
             lower_token = token.text.lower()
-            if lower_token in materials_keywords:
+            if lower_token in MATERIALS_KEYWORDS:
                 materials.add(lower_token)
-            elif lower_token in components_keywords:
+            elif lower_token in COMPONENTS_KEYWORDS:
                 components.add(lower_token)
-            elif lower_token in other_keywords:
+            elif lower_token in OTHER_KEYWORDS:
                 other.add(lower_token)
+        
+        # Check for multi-word keywords
+        for keyword in MATERIALS_KEYWORDS + COMPONENTS_KEYWORDS + OTHER_KEYWORDS:
+            if " " in keyword and keyword in text_lower:
+                if keyword in MATERIALS_KEYWORDS:
+                    materials.add(keyword)
+                elif keyword in COMPONENTS_KEYWORDS:
+                    components.add(keyword)
+                elif keyword in OTHER_KEYWORDS:
+                    other.add(keyword)
         return {
             "materials": sorted(list(materials)),
             "components": sorted(list(components)),
@@ -300,8 +337,24 @@ Please provide:
 # Function to generate word cloud
 def generate_wordcloud(text):
     try:
-        wordcloud = WordCloud(width=800, height=400, background_color='white',
-                              colormap='viridis', max_words=100).generate(text)
+        # Custom stopwords to exclude common non-roofing words
+        from wordcloud import STOPWORDS
+        custom_stopwords = set(STOPWORDS)
+        custom_stopwords.update(['will', 'shall', 'must', 'may', 'per', 'including', 'section'])
+        
+        wordcloud = WordCloud(
+            width=800, 
+            height=400, 
+            background_color='white',
+            colormap='viridis', 
+            max_words=80,
+            prefer_horizontal=0.9,
+            collocations=True,
+            stopwords=custom_stopwords,
+            relative_scaling=0.5,
+            min_font_size=10
+        ).generate(text)
+        
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.imshow(wordcloud, interpolation='bilinear')
         ax.axis("off")
@@ -364,11 +417,25 @@ def generate_pdf(summary_text):
         doc = SimpleDocTemplate(buffer, pagesize=letter)
         styles = getSampleStyleSheet()
         story = []
+        
         for line in summary_text.split("\n"):
             if line.strip():
-                para = Paragraph(line.replace("**", "<b>").replace("**", "</b>"), styles['Normal'])
-                story.append(para)
+                # Properly handle markdown bold syntax
+                formatted_line = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', line)
+                # Escape any remaining special characters
+                formatted_line = formatted_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                # Re-apply the bold tags after escaping
+                formatted_line = formatted_line.replace('&lt;b&gt;', '<b>').replace('&lt;/b&gt;', '</b>')
+                try:
+                    para = Paragraph(formatted_line, styles['Normal'])
+                    story.append(para)
+                except:
+                    # Fallback to plain text if formatting fails
+                    plain_text = line.replace('**', '')
+                    para = Paragraph(plain_text, styles['Normal'])
+                    story.append(para)
             story.append(Spacer(1, 12))
+        
         doc.build(story)
         buffer.seek(0)
         return buffer
