@@ -564,7 +564,7 @@ if uploaded_files:
         summaries.append(summary)
     
     # Create tabs for better organization
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Summary", "🤖 AI Insights", "📋 Comparison", "☁️ Word Cloud", "🔍 Search", "💾 Export"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📊 Summary", "🤖 AI Insights", "💬 Chatbot", "📋 Comparison", "☁️ Word Cloud", "🔍 Search", "💾 Export"])
     
     with tab1:
         st.header("Comprehensive Roof Summary")
@@ -592,9 +592,50 @@ if uploaded_files:
         st.markdown("---")
         # Display individual summaries
         st.subheader("Individual File Summaries")
-        for summary in summaries:
-            with st.expander(summary.split("\n")[0].replace("**", "")):
-                st.markdown(summary)
+        for idx, result in enumerate(results):
+            with st.container():
+                st.markdown(f"### 📄 {result['file_name']}")
+                
+                if result.get('error'):
+                    st.error(f"❌ Error: {result['error']}")
+                else:
+                    # Create metrics row
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if result['sq_ft_total']:
+                            st.metric("Square Footage", f"{result['sq_ft_total']:,.2f}")
+                    with col2:
+                        st.metric("Manufacturers", len(result['manufacturers']))
+                    with col3:
+                        st.metric("Materials", len(result['details']['materials']))
+                    
+                    # Details in expandable sections
+                    with st.expander("🔍 Detailed Information", expanded=False):
+                        if result['sq_ft_total']:
+                            st.write(f"**📏 Total Square Feet:** {result['sq_ft_total']:,.2f}")
+                            if result['sq_ft_matches']:
+                                st.write(f"*Found in: {', '.join(result['sq_ft_matches'])}*")
+                        
+                        if result['manufacturers']:
+                            st.write(f"**🏭 Manufacturers:** {', '.join(result['manufacturers'])}")
+                        
+                        if result['details']['materials']:
+                            st.write(f"**🛠 Materials:** {', '.join(result['details']['materials'])}")
+                        
+                        if result['details']['components']:
+                            st.write(f"**🔩 Components:** {', '.join(result['details']['components'])}")
+                        
+                        if result['details']['other']:
+                            st.write(f"**ℹ️ Other:** {', '.join(result['details']['other'])}")
+                        
+                        if result['warranty_info'] and result['warranty_info'] != "No warranty information found.":
+                            st.write(f"**📜 Warranty:** {result['warranty_info'][:300]}{'...' if len(result['warranty_info']) > 300 else ''}")
+                    
+                    if show_full_text and result['roof_text']:
+                        with st.expander("📄 Full Extracted Text"):
+                            st.text_area("Roof-related content", result['roof_text'], height=200, key=f"text_{idx}")
+                
+                st.markdown("---")
     
     with tab2:
         st.header("🤖 AI-Powered Insights")
@@ -625,6 +666,109 @@ if uploaded_files:
                             st.warning("Unable to generate AI insights for this document.")
     
     with tab3:
+        st.header("💬 Document Chatbot")
+        
+        if not openai_client:
+            st.warning("⚠️ OpenAI API key not configured. Chatbot requires API access.")
+            st.code("OPENAI_API_KEY=your-api-key-here", language="bash")
+        else:
+            st.info("Ask questions about your uploaded roof bid documents. Select a document and start chatting!")
+            
+            # Document selector
+            if results:
+                selected_doc = st.selectbox(
+                    "Select a document to chat about:",
+                    options=range(len(results)),
+                    format_func=lambda x: results[x]['file_name']
+                )
+                
+                doc_data = results[selected_doc]
+                
+                # Show quick summary of selected document
+                with st.expander("📋 Quick Summary", expanded=False):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if doc_data['sq_ft_total']:
+                            st.write(f"**Square Feet:** {doc_data['sq_ft_total']:,.2f}")
+                        if doc_data['manufacturers']:
+                            st.write(f"**Manufacturers:** {', '.join(doc_data['manufacturers'])}")
+                    with col2:
+                        if doc_data['details']['materials']:
+                            st.write(f"**Materials:** {', '.join(doc_data['details']['materials'])}")
+                        if doc_data['details']['components']:
+                            st.write(f"**Components:** {', '.join(doc_data['details']['components'])}")
+                
+                # Initialize chat history in session state
+                if 'chat_history' not in st.session_state:
+                    st.session_state.chat_history = {}
+                
+                if selected_doc not in st.session_state.chat_history:
+                    st.session_state.chat_history[selected_doc] = []
+                
+                # Display chat history
+                for message in st.session_state.chat_history[selected_doc]:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+                
+                # Chat input
+                if prompt := st.chat_input(f"Ask anything about {doc_data['file_name']}..."):
+                    # Display user message
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
+                    
+                    # Add to history
+                    st.session_state.chat_history[selected_doc].append({"role": "user", "content": prompt})
+                    
+                    # Generate response
+                    with st.chat_message("assistant"):
+                        with st.spinner("Thinking..."):
+                            try:
+                                # Prepare context for the chatbot
+                                context = f"""Document: {doc_data['file_name']}
+
+Square Footage: {doc_data['sq_ft_total'] if doc_data['sq_ft_total'] else 'Not specified'}
+Manufacturers: {', '.join(doc_data['manufacturers']) if doc_data['manufacturers'] else 'None found'}
+Materials: {', '.join(doc_data['details']['materials']) if doc_data['details']['materials'] else 'None found'}
+Components: {', '.join(doc_data['details']['components']) if doc_data['details']['components'] else 'None found'}
+
+Document Text (excerpt):
+{doc_data['roof_text'][:4000]}"""
+                                
+                                # Build messages for API
+                                messages = [
+                                    {"role": "system", "content": f"You are an expert roof construction analyst. You have access to a roofing bid document and should answer questions about it accurately and helpfully. Base your answers on the document content provided.\n\n{context}"},
+                                ]
+                                
+                                # Add chat history (last 5 exchanges to keep context manageable)
+                                for msg in st.session_state.chat_history[selected_doc][-10:]:
+                                    messages.append({"role": msg["role"], "content": msg["content"]})
+                                
+                                response = openai_client.chat.completions.create(
+                                    model=openai_model,
+                                    messages=messages,
+                                    temperature=0.7,
+                                    max_tokens=800,
+                                    stream=True
+                                )
+                                
+                                # Stream the response
+                                response_text = st.write_stream(response)
+                                
+                                # Add to history
+                                st.session_state.chat_history[selected_doc].append({"role": "assistant", "content": response_text})
+                                
+                            except Exception as e:
+                                error_msg = f"Error generating response: {e}"
+                                st.error(error_msg)
+                                st.session_state.chat_history[selected_doc].append({"role": "assistant", "content": error_msg})
+                
+                # Clear chat button
+                if st.session_state.chat_history[selected_doc]:
+                    if st.button("🗑️ Clear Chat History"):
+                        st.session_state.chat_history[selected_doc] = []
+                        st.rerun()
+    
+    with tab4:
         st.header("📋 Comparison Across Documents")
         comparison_data = {
             "File": [r['file_name'] for r in results],
@@ -645,7 +789,7 @@ if uploaded_files:
             mime="text/csv"
         )
     
-    with tab4:
+    with tab5:
         st.header("☁️ Roof-Related Word Cloud")
         agg_roof_text = " ".join([r['roof_text'] for r in results if r['roof_text']])
         if agg_roof_text and len(agg_roof_text.strip()) > 0:
@@ -655,7 +799,7 @@ if uploaded_files:
         else:
             st.warning("No text available to generate word cloud")
     
-    with tab5:
+    with tab6:
         st.header("🔍 Search Within Extracted Roof Text")
         search_query = st.text_input("Enter search term (e.g., 'warranty', 'GAF', 'TPO')")
         if search_query:
@@ -676,7 +820,7 @@ if uploaded_files:
             if not found_results:
                 st.info(f"No results found for '{search_query}'")
     
-    with tab6:
+    with tab7:
         st.header("💾 Export Summary")
         # Prepare full summary text
         agg_summary = "ROOF PROJECT BID ANALYSIS SUMMARY\n"
