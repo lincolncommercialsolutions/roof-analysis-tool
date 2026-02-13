@@ -49,6 +49,12 @@ import base64
 import concurrent.futures
 import traceback
 import pandas as pd
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# Load environment variables
+load_dotenv()
 
 # Configure Streamlit page
 st.set_page_config(
@@ -57,6 +63,17 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Initialize OpenAI client
+@st.cache_resource
+def get_openai_client():
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        return OpenAI(api_key=api_key)
+    return None
+
+openai_client = get_openai_client()
+openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # Load spaCy model with caching
 @st.cache_resource
@@ -227,6 +244,46 @@ def extract_warranty_info(roof_text):
         st.warning(f"Error extracting warranty info: {e}")
         return ""
 
+# Function to get AI-enhanced analysis using OpenAI
+def get_ai_analysis(roof_text, sq_ft, manufacturers, roof_details):
+    """Use OpenAI to provide intelligent insights on the roof project."""
+    if not openai_client or not roof_text:
+        return None
+    
+    try:
+        # Prepare context for AI
+        context = f"""Analyze this roof project bid document:
+
+Square Footage: {sq_ft if sq_ft else 'Not specified'}
+Manufacturers Found: {', '.join(manufacturers) if manufacturers else 'None'}
+Materials: {', '.join(roof_details.get('materials', [])) if roof_details.get('materials') else 'None'}
+Components: {', '.join(roof_details.get('components', [])) if roof_details.get('components') else 'None'}
+
+Document Text (excerpt):
+{roof_text[:3000]}
+
+Please provide:
+1. Key highlights and important details
+2. Potential concerns or missing information
+3. Cost considerations based on the specifications
+4. Recommended questions to ask the contractor
+5. Overall assessment of the bid quality"""
+
+        response = openai_client.chat.completions.create(
+            model=openai_model,
+            messages=[
+                {"role": "system", "content": "You are an expert roof construction analyst specializing in commercial and residential roofing projects. Provide concise, actionable insights."},
+                {"role": "user", "content": context}
+            ],
+            temperature=0.7,
+            max_tokens=1000
+        )
+        
+        return response.choices[0].message.content
+    except Exception as e:
+        st.warning(f"AI analysis unavailable: {e}")
+        return None
+
 # Function to generate word cloud
 def generate_wordcloud(text):
     try:
@@ -328,10 +385,30 @@ with st.sidebar:
     st.header("⚙️ Settings")
     max_file_size = st.number_input("Max file size (MB)", min_value=1, max_value=100, value=10)
     show_full_text = st.checkbox("Show full extracted text", value=False)
+    
+    st.markdown("---")
+    st.markdown("### 🤖 AI Configuration")
+    
+    if openai_client:
+        st.success(f"✅ OpenAI Connected ({openai_model})")
+    else:
+        st.warning("⚠️ OpenAI Not Configured")
+        with st.expander("Setup Instructions"):
+            st.markdown("""
+            1. Create a `.env` file in the project root
+            2. Add your OpenAI API key:
+            ```
+            OPENAI_API_KEY=sk-your-key-here
+            OPENAI_MODEL=gpt-4o-mini
+            ```
+            3. Restart the application
+            """)
+    
     st.markdown("---")
     st.markdown("### About")
     st.info(
-        "This tool analyzes roof project bid documents to extract roof-related information from uploaded files."
+        "This tool analyzes roof project bid documents to extract roof-related information from uploaded files. "
+        "With AI integration, get intelligent insights and recommendations."
     )
 
 st.markdown("""
@@ -407,7 +484,7 @@ if uploaded_files:
         summaries.append(summary)
     
     # Create tabs for better organization
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Summary", "📋 Comparison", "☁️ Word Cloud", "🔍 Search", "💾 Export"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Summary", "🤖 AI Insights", "📋 Comparison", "☁️ Word Cloud", "🔍 Search", "💾 Export"])
     
     with tab1:
         st.header("Comprehensive Roof Summary")
@@ -440,6 +517,34 @@ if uploaded_files:
                 st.markdown(summary)
     
     with tab2:
+        st.header("🤖 AI-Powered Insights")
+        
+        if not openai_client:
+            st.warning("⚠️ OpenAI API key not configured. Please add your API key to the .env file to use AI insights.")
+            st.code("OPENAI_API_KEY=your-api-key-here", language="bash")
+        else:
+            st.info("💡 AI insights powered by " + openai_model)
+            
+            # Generate AI analysis for each document
+            for idx, result in enumerate(results):
+                if result.get('error'):
+                    continue
+                    
+                with st.expander(f"🔍 AI Analysis: {result['file_name']}", expanded=(idx == 0)):
+                    with st.spinner("Generating AI insights..."):
+                        ai_insights = get_ai_analysis(
+                            result['roof_text'],
+                            result['sq_ft_total'],
+                            result['manufacturers'],
+                            result['details']
+                        )
+                        
+                        if ai_insights:
+                            st.markdown(ai_insights)
+                        else:
+                            st.warning("Unable to generate AI insights for this document.")
+    
+    with tab3:
         st.header("📋 Comparison Across Documents")
         comparison_data = {
             "File": [r['file_name'] for r in results],
@@ -460,7 +565,7 @@ if uploaded_files:
             mime="text/csv"
         )
     
-    with tab3:
+    with tab4:
         st.header("☁️ Roof-Related Word Cloud")
         agg_roof_text = " ".join([r['roof_text'] for r in results if r['roof_text']])
         if agg_roof_text and len(agg_roof_text.strip()) > 0:
@@ -470,7 +575,7 @@ if uploaded_files:
         else:
             st.warning("No text available to generate word cloud")
     
-    with tab4:
+    with tab5:
         st.header("🔍 Search Within Extracted Roof Text")
         search_query = st.text_input("Enter search term (e.g., 'warranty', 'GAF', 'TPO')")
         if search_query:
@@ -491,7 +596,7 @@ if uploaded_files:
             if not found_results:
                 st.info(f"No results found for '{search_query}'")
     
-    with tab5:
+    with tab6:
         st.header("💾 Export Summary")
         # Prepare full summary text
         agg_summary = "ROOF PROJECT BID ANALYSIS SUMMARY\n"

@@ -1,6 +1,6 @@
 # 🏠 Roof Project Bid Analyzer
 
-An intelligent document analysis tool for roof project bids that extracts key information from PDFs and images.
+An intelligent document analysis tool for roof project bids that extracts key information from PDFs and images, powered by AI insights.
 
 ## Features
 
@@ -9,6 +9,7 @@ An intelligent document analysis tool for roof project bids that extracts key in
 - 📏 **Square Footage Detection**: Automatically identify roofing area measurements
 - 🏭 **Manufacturer Identification**: Detect approved roofing manufacturers (20+ brands)
 - 🔧 **Material Detection**: Identify roofing types (EPDM, TPO, PVC, shingles, etc.)
+- 🤖 **AI-Powered Insights**: Get intelligent analysis and recommendations using OpenAI
 - 📊 **Comparison**: Compare multiple documents side-by-side
 - ☁️ **Word Cloud**: Visualize roof-related terms
 - 🔍 **Search**: Find specific terms across all documents
@@ -34,6 +35,18 @@ pip install -r requirements.txt
 ```bash
 python -m spacy download en_core_web_sm
 ```
+
+4. Configure OpenAI (optional, for AI insights):
+```bash
+# Copy the example environment file
+cp .env.example .env
+
+# Edit .env and add your OpenAI API key
+OPENAI_API_KEY=sk-your-actual-api-key-here
+OPENAI_MODEL=gpt-4o-mini
+```
+
+Get your API key from: https://platform.openai.com/api-keys
 
 ## Usage
 
@@ -65,7 +78,7 @@ The app will open in your default web browser at `http://localhost:8501`
 - Roofing materials (membrane, shingles, tiles, etc.)
 - Components (insulation, flashing, drainage, etc.)
 - Warranty information
-- And more...
+- **AI-Powered Insights**: Intelligent analysis, cost considerations, and recommended questions (when OpenAI is configured)
 
 ## Technologies Used
 
