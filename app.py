@@ -1,0 +1,538 @@
+# Roof Project Bid Analyzer Streamlit App
+# Requirements: Run `pip install streamlit pdfplumber easyocr spacy wordcloud matplotlib reportlab pillow` before running the app.
+# Also, download spacy model: `python -m spacy download en_core_web_sm`
+# For OCR on images/drawings/blueprints, easyocr is used (supports multiple languages, but defaults to English).
+# This app prioritizes large document analysis by processing PDFs in chunks/pages and handling multiple files concurrently.
+# Additional features:
+# - Handles both PDFs (specs/drawings) and images (blueprints/photos).
+# - Keyword-based filtering for roof-related content only.
+# - NLP (spaCy) for entity recognition to identify manufacturers, measurements, etc.
+# - Comprehensive summary with extracted sq ft, manufacturers, and other roof info.
+# - Visualization: Word cloud of roof-related terms.
+# - Comparison across multiple documents.
+# - Export summary to TXT or PDF.
+# - Search function within extracted text.
+# - Handles large docs by streaming page-by-page to avoid memory issues.
+
+# Roof Project Bid Analyzer Streamlit App
+# Requirements: Run `pip install streamlit pdfplumber easyocr spacy wordcloud matplotlib reportlab pandas` before running the app.
+# Also, download spacy model: `python -m spacy download en_core_web_sm`
+# For OCR on images/drawings/blueprints, easyocr is used (supports multiple languages, but defaults to English).
+# This app prioritizes large document analysis by processing PDFs in chunks/pages and handling multiple files concurrently.
+# Additional features:
+# - Handles both PDFs (specs/drawings) and images (blueprints/photos).
+# - Keyword-based filtering for roof-related content only.
+# - NLP (spaCy) for entity recognition to identify manufacturers, measurements, etc.
+# - Comprehensive summary with extracted sq ft, manufacturers, materials, components, warranty info, and other roof info.
+# - Visualization: Word cloud of roof-related terms.
+# - Comparison across multiple documents.
+# - Export summary to TXT, PDF, or CSV.
+# - Search function within extracted text.
+# - Handles large docs by streaming page-by-page to avoid memory issues.
+# - Extracts warranty-related content specifically.
+
+import streamlit as st
+import pdfplumber
+import easyocr
+import spacy
+from spacy.matcher import PhraseMatcher
+import re
+from io import BytesIO
+from PIL import Image
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+import base64
+import concurrent.futures
+import traceback
+import pandas as pd
+
+# Configure Streamlit page
+st.set_page_config(
+    page_title="Roof Bid Analyzer",
+    page_icon="🏠",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Load spaCy model with caching
+@st.cache_resource
+def load_nlp_model():
+    try:
+        return spacy.load("en_core_web_sm")
+    except Exception as e:
+        st.error(f"Error loading spaCy model: {e}\nPlease run: python -m spacy download en_core_web_sm")
+        return None
+
+nlp = load_nlp_model()
+
+# Known roofing manufacturers (expandable list used for matching in documents)
+roofing_manufacturers = [
+    "GAF", "CertainTeed", "Owens Corning", "Firestone", "Carlisle", "Johns Manville",
+    "TAMKO", "IKO", "Atlas", "Malarkey", "Polyglass", "Soprema", "Tremco", "Siplast",
+    "Derbigum", "EPDM", "TPO", "PVC", "Versico", "GenFlex", "GAF Materials",
+    "CentiMark", "Duro-Last", "FiberTite"
+]
+
+# Initialize PhraseMatcher for manufacturers
+@st.cache_resource
+def get_matcher():
+    if nlp is None:
+        return None
+    matcher = PhraseMatcher(nlp.vocab)
+    patterns = [nlp.make_doc(manu) for manu in roofing_manufacturers]
+    matcher.add("ROOF_MANU", patterns)
+    return matcher
+
+matcher = get_matcher()
+
+# Initialize OCR reader with caching
+@st.cache_resource
+def get_ocr_reader():
+    try:
+        return easyocr.Reader(['en'], gpu=False)
+    except Exception as e:
+        st.warning(f"OCR initialization warning: {e}")
+        return None
+
+# Function to extract text from PDF (handles large PDFs by page)
+def extract_text_from_pdf(file):
+    text = ""
+    try:
+        with pdfplumber.open(file) as pdf:
+            total_pages = len(pdf.pages)
+            progress_bar = st.progress(0)
+            for idx, page in enumerate(pdf.pages):
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+                progress_bar.progress((idx + 1) / total_pages)
+            progress_bar.empty()
+        return text
+    except Exception as e:
+        st.error(f"Error extracting text from PDF {file.name}: {e}")
+        return ""
+
+# Function to perform OCR on image (for blueprints/drawings)
+def ocr_image(file):
+    try:
+        reader = get_ocr_reader()
+        if reader is None:
+            st.error("OCR reader not available")
+            return ""
+        img = Image.open(file)
+        with st.spinner(f"Performing OCR on {file.name}..."):
+            result = reader.readtext(img, detail=0)
+        return " ".join(result)
+    except Exception as e:
+        st.error(f"Error performing OCR on {file.name}: {e}")
+        return ""
+
+# Function to filter roof-related content
+def filter_roof_content(text):
+    if not text or nlp is None:
+        return text
+    try:
+        # Split into sentences/paragraphs
+        doc = nlp(text)
+        roof_sentences = []
+        for sent in doc.sents:
+            lower_sent = sent.text.lower()
+            if "roof" in lower_sent or "roofing" in lower_sent:
+                roof_sentences.append(sent.text)
+        return "\n".join(roof_sentences) if roof_sentences else text
+    except Exception as e:
+        st.warning(f"Error filtering content: {e}. Returning full text.")
+        return text
+
+# Function to extract total square feet (looks for patterns like "X sq ft" near roof context)
+def extract_sq_ft(roof_text):
+    sq_ft_pattern = re.compile(r'(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:sq\.?\s*ft\.?|square\s*feet|sf)', re.IGNORECASE)
+    matches = sq_ft_pattern.findall(roof_text)
+    if matches:
+        # Clean and sum potential sq ft (assuming multiple areas might be listed)
+        total = sum(float(m.replace(",", "")) for m in matches)
+        return total, matches
+    return None, []
+
+# Function to identify accepted manufacturers
+def identify_manufacturers(roof_text):
+    if not roof_text or nlp is None or matcher is None:
+        return []
+    try:
+        doc = nlp(roof_text)
+        matches = matcher(doc)
+        found_manus = set()
+        for match_id, start, end in matches:
+            found_manus.add(doc[start:end].text)
+        # Look for context like "accepted", "approved", "specified"
+        context_pattern = re.compile(r'(accepted|approved|specified|equivalent|or equal)\s*(manufacturers?|brands?):\s*(.+)', re.IGNORECASE)
+        context_matches = context_pattern.findall(roof_text)
+        if context_matches:
+            for _, _, manus in context_matches:
+                for manu in roofing_manufacturers:
+                    if manu.lower() in manus.lower():
+                        found_manus.add(manu)
+        return sorted(list(found_manus))
+    except Exception as e:
+        st.warning(f"Error identifying manufacturers: {e}")
+        return []
+
+# Function to extract materials, components, and other roof-related info
+def extract_roof_details(roof_text):
+    if not roof_text or nlp is None:
+        return {"materials": [], "components": [], "other": []}
+    try:
+        materials_keywords = ["epdm", "tpo", "pvc", "shingle", "shingles", "tile", "metal", "asphalt", "membrane"]
+        components_keywords = ["insulation", "deck", "flashing", "drainage", "underlayment", "penetration", "valley", "ridge", "gutter"]
+        other_keywords = ["slope"]
+        
+        doc = nlp(roof_text)
+        materials = set()
+        components = set()
+        other = set()
+        for token in doc:
+            lower_token = token.text.lower()
+            if lower_token in materials_keywords:
+                materials.add(lower_token)
+            elif lower_token in components_keywords:
+                components.add(lower_token)
+            elif lower_token in other_keywords:
+                other.add(lower_token)
+        return {
+            "materials": sorted(list(materials)),
+            "components": sorted(list(components)),
+            "other": sorted(list(other))
+        }
+    except Exception as e:
+        st.warning(f"Error extracting roof details: {e}")
+        return {"materials": [], "components": [], "other": []}
+
+# Function to extract warranty-related content
+def extract_warranty_info(roof_text):
+    if not roof_text or nlp is None:
+        return ""
+    try:
+        doc = nlp(roof_text)
+        warranty_sentences = []
+        for sent in doc.sents:
+            lower_sent = sent.text.lower()
+            if "warranty" in lower_sent or "guarantee" in lower_sent:
+                warranty_sentences.append(sent.text)
+        return "\n".join(warranty_sentences) if warranty_sentences else "No warranty information found."
+    except Exception as e:
+        st.warning(f"Error extracting warranty info: {e}")
+        return ""
+
+# Function to generate word cloud
+def generate_wordcloud(text):
+    try:
+        wordcloud = WordCloud(width=800, height=400, background_color='white',
+                              colormap='viridis', max_words=100).generate(text)
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.imshow(wordcloud, interpolation='bilinear')
+        ax.axis("off")
+        plt.tight_layout(pad=0)
+        return fig
+    except Exception as e:
+        st.error(f"Error generating word cloud: {e}")
+        return None
+
+# Function to process a single file
+def process_file(file, file_type):
+    try:
+        if file_type == "pdf":
+            text = extract_text_from_pdf(file)
+        else:  # image
+            text = ocr_image(file)
+        if not text:
+            return {
+                "file_name": file.name,
+                "error": "No text extracted",
+                "roof_text": "",
+                "sq_ft_total": None,
+                "sq_ft_matches": [],
+                "manufacturers": [],
+                "details": {"materials": [], "components": [], "other": []},
+                "warranty_info": ""
+            }
+        roof_text = filter_roof_content(text)
+        sq_ft_total, sq_ft_matches = extract_sq_ft(roof_text)
+        manufacturers = identify_manufacturers(roof_text)
+        details = extract_roof_details(roof_text)
+        warranty_info = extract_warranty_info(roof_text)
+        return {
+            "file_name": file.name,
+            "roof_text": roof_text,
+            "sq_ft_total": sq_ft_total,
+            "sq_ft_matches": sq_ft_matches,
+            "manufacturers": manufacturers,
+            "details": details,
+            "warranty_info": warranty_info
+        }
+    except Exception as e:
+        st.error(f"Error processing {file.name}: {e}")
+        traceback.print_exc()
+        return {
+            "file_name": file.name,
+            "error": str(e),
+            "roof_text": "",
+            "sq_ft_total": None,
+            "sq_ft_matches": [],
+            "manufacturers": [],
+            "details": {"materials": [], "components": [], "other": []},
+            "warranty_info": ""
+        }
+
+# Function to generate PDF export
+def generate_pdf(summary_text):
+    try:
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+        for line in summary_text.split("\n"):
+            if line.strip():
+                para = Paragraph(line.replace("**", "<b>").replace("**", "</b>"), styles['Normal'])
+                story.append(para)
+            story.append(Spacer(1, 12))
+        doc.build(story)
+        buffer.seek(0)
+        return buffer
+    except Exception as e:
+        st.error(f"Error generating PDF: {e}")
+        # Fallback to simple canvas method
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=letter)
+        width, height = letter
+        y = height - 50
+        for line in summary_text.split("\n"):
+            if y < 50:
+                c.showPage()
+                y = height - 50
+            if line.strip():
+                c.drawString(50, y, line[:100])  # Truncate long lines
+            y -= 15
+        c.save()
+        buffer.seek(0)
+        return buffer
+
+# Main app
+st.title("🏠 Roof Project Bid Analyzer")
+
+# Sidebar for settings
+with st.sidebar:
+    st.header("⚙️ Settings")
+    max_file_size = st.number_input("Max file size (MB)", min_value=1, max_value=100, value=10)
+    show_full_text = st.checkbox("Show full extracted text", value=False)
+    st.markdown("---")
+    st.markdown("### About")
+    st.info(
+        "This tool analyzes roof project bid documents to extract roof-related information from uploaded files."
+    )
+
+st.markdown("""
+Upload multiple bid documents (PDFs for specs/drawings, images for blueprints). 
+The app will analyze and summarize only roof-related information.
+""")
+
+# File uploader
+uploaded_files = st.file_uploader(
+    "Upload documents",
+    type=['pdf', 'png', 'jpg', 'jpeg'],
+    accept_multiple_files=True,
+    help="Upload PDFs or images (blueprints, specifications, drawings)"
+)
+
+if uploaded_files:
+    # Check file sizes
+    max_size_bytes = max_file_size * 1024 * 1024
+    valid_files = []
+    for file in uploaded_files:
+        file_size = file.size
+        if file_size > max_size_bytes:
+            st.warning(f"⚠️ {file.name} exceeds {max_file_size}MB limit (size: {file_size / 1024 / 1024:.2f}MB)")
+        else:
+            valid_files.append(file)
+    if not valid_files:
+        st.error("No valid files to process!")
+        st.stop()
+    st.success(f"✅ Processing {len(valid_files)} file(s)...")
+    
+    # Process files concurrently for efficiency (handles large/multiple docs)
+    results = []
+    with st.spinner("Analyzing documents..."):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            futures = []
+            for file in valid_files:
+                file_type = "pdf" if file.type == "application/pdf" else "image"
+                futures.append(executor.submit(process_file, file, file_type))
+            for future in concurrent.futures.as_completed(futures):
+                results.append(future.result())
+    
+    # Comprehensive summary
+    all_sq_ft = 0
+    all_manufacturers = set()
+    all_materials = set()
+    all_components = set()
+    all_other = set()
+    summaries = []
+    for result in results:
+        summary = f"**File: {result['file_name']}**\n"
+        if result.get('error'):
+            summary += f"❌ Error: {result['error']}\n"
+        else:
+            if result['sq_ft_total']:
+                summary += f"📏 Total Roofing Square Feet: {result['sq_ft_total']:,.2f} (from matches: {', '.join(result['sq_ft_matches'])})\n"
+                all_sq_ft += result['sq_ft_total']
+            if result['manufacturers']:
+                summary += f"🏭 Accepted Roofing Manufacturers: {', '.join(result['manufacturers'])}\n"
+                all_manufacturers.update(result['manufacturers'])
+            if result['details']['materials']:
+                summary += f"🛠 Materials: {', '.join(result['details']['materials'])}\n"
+                all_materials.update(result['details']['materials'])
+            if result['details']['components']:
+                summary += f"🔩 Components: {', '.join(result['details']['components'])}\n"
+                all_components.update(result['details']['components'])
+            if result['details']['other']:
+                summary += f"ℹ️ Other Info: {', '.join(result['details']['other'])}\n"
+                all_other.update(result['details']['other'])
+            if result['warranty_info']:
+                summary += f"📜 Warranty Information: {result['warranty_info'][:500]}{'...' if len(result['warranty_info']) > 500 else ''}\n"
+            if show_full_text and result['roof_text']:
+                summary += f"\n📄 Extracted Roof Text:\n{result['roof_text'][:2000]}{'...' if len(result['roof_text']) > 2000 else ''}\n"
+        summaries.append(summary)
+    
+    # Create tabs for better organization
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Summary", "📋 Comparison", "☁️ Word Cloud", "🔍 Search", "💾 Export"])
+    
+    with tab1:
+        st.header("Comprehensive Roof Summary")
+        # Aggregated across all files
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Square Feet", f"{all_sq_ft:,.2f}" if all_sq_ft > 0 else "N/A")
+        with col2:
+            st.metric("Manufacturers Found", len(all_manufacturers))
+        with col3:
+            st.metric("Files Processed", len(results))
+        st.markdown("---")
+        if all_manufacturers:
+            st.subheader("🏭 Accepted Roofing Manufacturers (All Files)")
+            st.write(", ".join(sorted(all_manufacturers)))
+        if all_materials:
+            st.subheader("🛠 Materials (All Files)")
+            st.write(", ".join(sorted(all_materials)))
+        if all_components:
+            st.subheader("🔩 Components (All Files)")
+            st.write(", ".join(sorted(all_components)))
+        if all_other:
+            st.subheader("ℹ️ Other Info (All Files)")
+            st.write(", ".join(sorted(all_other)))
+        st.markdown("---")
+        # Display individual summaries
+        st.subheader("Individual File Summaries")
+        for summary in summaries:
+            with st.expander(summary.split("\n")[0].replace("**", "")):
+                st.markdown(summary)
+    
+    with tab2:
+        st.header("📋 Comparison Across Documents")
+        comparison_data = {
+            "File": [r['file_name'] for r in results],
+            "Sq Ft": [f"{r['sq_ft_total']:,.2f}" if r['sq_ft_total'] else "N/A" for r in results],
+            "Manufacturers": [", ".join(r['manufacturers']) or "N/A" for r in results],
+            "Materials": [", ".join(r['details']['materials']) or "N/A" for r in results],
+            "Components": [", ".join(r['details']['components']) or "N/A" for r in results],
+            "Warranty": ["Yes" if r['warranty_info'] else "No" for r in results]
+        }
+        df = pd.DataFrame(comparison_data)
+        st.dataframe(df, use_container_width=True)
+        # Download comparison as CSV
+        csv = df.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Comparison (CSV)",
+            data=csv,
+            file_name="roof_comparison.csv",
+            mime="text/csv"
+        )
+    
+    with tab3:
+        st.header("☁️ Roof-Related Word Cloud")
+        agg_roof_text = " ".join([r['roof_text'] for r in results if r['roof_text']])
+        if agg_roof_text and len(agg_roof_text.strip()) > 0:
+            fig = generate_wordcloud(agg_roof_text)
+            if fig:
+                st.pyplot(fig)
+        else:
+            st.warning("No text available to generate word cloud")
+    
+    with tab4:
+        st.header("🔍 Search Within Extracted Roof Text")
+        search_query = st.text_input("Enter search term (e.g., 'warranty', 'GAF', 'TPO')")
+        if search_query:
+            found_results = False
+            for result in results:
+                if result['roof_text'] and search_query.lower() in result['roof_text'].lower():
+                    found_results = True
+                    st.subheader(f"📄 {result['file_name']}")
+                    # Highlight search term
+                    highlighted = re.sub(
+                        f"({re.escape(search_query)})",
+                        r"**\1**",
+                        result['roof_text'][:2000],
+                        flags=re.IGNORECASE
+                    )
+                    st.markdown(highlighted + ("..." if len(result['roof_text']) > 2000 else ""))
+                    st.markdown("---")
+            if not found_results:
+                st.info(f"No results found for '{search_query}'")
+    
+    with tab5:
+        st.header("💾 Export Summary")
+        # Prepare full summary text
+        agg_summary = "ROOF PROJECT BID ANALYSIS SUMMARY\n"
+        agg_summary += "=" * 50 + "\n\n"
+        agg_summary += f"Total Files Analyzed: {len(results)}\n"
+        if all_sq_ft > 0:
+            agg_summary += f"Total Roofing Square Feet: {all_sq_ft:,.2f}\n"
+        if all_manufacturers:
+            agg_summary += f"Accepted Roofing Manufacturers: {', '.join(sorted(all_manufacturers))}\n"
+        if all_materials:
+            agg_summary += f"Materials: {', '.join(sorted(all_materials))}\n"
+        if all_components:
+            agg_summary += f"Components: {', '.join(sorted(all_components))}\n"
+        if all_other:
+            agg_summary += f"Other Info: {', '.join(sorted(all_other))}\n"
+        agg_summary += "\n" + "-" * 50 + "\n\n"
+        full_summary_text = agg_summary + "\n".join(summaries)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button(
+                label="📄 Download as TXT",
+                data=full_summary_text,
+                file_name="roof_summary.txt",
+                mime="text/plain"
+            )
+        with col2:
+            pdf_buffer = generate_pdf(full_summary_text)
+            if pdf_buffer:
+                st.download_button(
+                    label="📑 Download as PDF",
+                    data=pdf_buffer,
+                    file_name="roof_summary.pdf",
+                    mime="application/pdf"
+                )
+        st.markdown("---")
+        st.subheader("Preview")
+        st.text_area("Summary Preview", full_summary_text, height=300)
+else:
+    # Show instructions when no files uploaded
+    st.info("👆 Upload PDF or image files to begin analysis")
+
+# Footer
+st.markdown("---")
+st.markdown("*Developed for roof project bid analysis | Powered by Streamlit, spaCy & EasyOCR*")
