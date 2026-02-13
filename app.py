@@ -67,13 +67,26 @@ st.set_page_config(
 # Initialize OpenAI client
 @st.cache_resource
 def get_openai_client():
-    api_key = os.getenv("OPENAI_API_KEY")
+    # Try to get API key from Streamlit secrets first (for cloud deployment)
+    # Then fall back to environment variables (for local deployment)
+    api_key = None
+    try:
+        api_key = st.secrets.get("OPENAI_API_KEY")
+    except:
+        api_key = os.getenv("OPENAI_API_KEY")
+    
     if api_key:
         return OpenAI(api_key=api_key)
     return None
 
+def get_openai_model():
+    try:
+        return st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+    except:
+        return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
 openai_client = get_openai_client()
-openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+openai_model = get_openai_model()
 
 # Load spaCy model with caching
 @st.cache_resource

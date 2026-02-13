@@ -31,12 +31,12 @@ An intelligent document analysis tool for roof project bids that extracts key in
 pip install -r requirements.txt
 ```
 
-3. Download the spaCy language model:
+**Note:** The spaCy language model is automatically installed via requirements.txt. If you need to install it manually, run:
 ```bash
 python -m spacy download en_core_web_sm
 ```
 
-4. Configure OpenAI (optional, for AI insights):
+3. Configure OpenAI (optional, for AI insights):
 ```bash
 # Copy the example environment file
 cp .env.example .env
@@ -95,6 +95,20 @@ The app will open in your default web browser at `http://localhost:8501`
 Adjust settings in the sidebar:
 - Maximum file size limit
 - Full text display toggle
+
+## Deploying to Streamlit Cloud
+
+1. Fork or push this repository to GitHub
+2. Go to [share.streamlit.io](https://share.streamlit.io)
+3. Connect your GitHub account and select this repository
+4. In **Advanced settings** → **Secrets**, add your OpenAI API key:
+```toml
+OPENAI_API_KEY = "sk-your-actual-api-key-here"
+OPENAI_MODEL = "gpt-4o-mini"
+```
+5. Click **Deploy**!
+
+The spaCy model will be automatically installed during deployment.
 
 ## Troubleshooting
 
