@@ -99,12 +99,26 @@ def load_nlp_model():
 
 nlp = load_nlp_model()
 
-# Known roofing manufacturers (expandable list used for matching in documents)
+# Known roofing manufacturers (expandable list - excludes material types like EPDM/TPO/PVC)
 roofing_manufacturers = [
-    "GAF", "CertainTeed", "Owens Corning", "Firestone", "Carlisle", "Johns Manville",
-    "TAMKO", "IKO", "Atlas", "Malarkey", "Polyglass", "Soprema", "Tremco", "Siplast",
-    "Derbigum", "EPDM", "TPO", "PVC", "Versico", "GenFlex", "GAF Materials",
-    "CentiMark", "Duro-Last", "FiberTite"
+    "GAF", "GAF Materials", "EverGuard",
+    "CertainTeed",
+    "Owens Corning",
+    "Firestone", "Firestone Building Products", "Red Shield",
+    "Carlisle", "Carlisle SynTec", "Sure-Seal", "SecurShield",
+    "Johns Manville", "JM",
+    "TAMKO", "IKO", "Atlas", "Malarkey",
+    "Polyglass",
+    "Soprema", "Sopralene",
+    "Tremco", "Siplast",
+    "Derbigum",
+    "Versico",
+    "GenFlex",
+    "CentiMark",
+    "Duro-Last",
+    "FiberTite",
+    "Sarnafil",
+    "Mule-Hide"
 ]
 
 # Initialize PhraseMatcher for manufacturers
@@ -193,19 +207,74 @@ def identify_manufacturers(roof_text):
     if not roof_text or nlp is None or matcher is None:
         return []
     try:
-        doc = nlp(roof_text)
-        matches = matcher(doc)
         found_manus = set()
-        for match_id, start, end in matches:
-            found_manus.add(doc[start:end].text)
-        # Look for context like "accepted", "approved", "specified"
-        context_pattern = re.compile(r'(accepted|approved|specified|equivalent|or equal)\s*(manufacturers?|brands?):\s*(.+)', re.IGNORECASE)
-        context_matches = context_pattern.findall(roof_text)
-        if context_matches:
-            for _, _, manus in context_matches:
+        
+        # Strategy 1: Look for "ACCEPTED MANUFACTURERS" section and extract all following lines
+        # that match manufacturer patterns
+        section_start = re.search(
+            r'(?:accepted|approved|specified)\s+(?:roofing\s+)?manufacturers?',
+            roof_text,
+            re.IGNORECASE
+        )
+        
+        if section_start:
+            # Get text from section start onwards
+            section_text = roof_text[section_start.end():]
+            # Take up to 1500 characters or until we hit certain section markers
+            section_end = re.search(r'\n\s*(?:PART|SECTION|ARTICLE|EXECUTION|SUBMITTALS|PRODUCTS|[A-Z\s]{20,})', section_text)
+            if section_end:
+                section_text = section_text[:section_end.start()]
+            else:
+                section_text = section_text[:1500]
+            
+            # Split by newlines to get individual manufacturer entries
+            lines = section_text.split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                if not line or len(line) < 3:
+                    continue
+                
+                # Check each known manufacturer
                 for manu in roofing_manufacturers:
-                    if manu.lower() in manus.lower():
+                    # Case-insensitive match
+                    if re.search(r'\b' + re.escape(manu) + r'\b', line, re.IGNORECASE):
+                        # Extract the full manufacturer entry (up to — or - for product details)
+                        if '—' in line or ' - ' in line:
+                            # Split by em dash or regular dash with spaces
+                            parts = re.split(r'\s*[—]\s*|\s+-\s+', line, maxsplit=1)
+                            if len(parts) > 1:
+                                manu_name = parts[0].strip()
+                                product_info = parts[1].strip()
+                                # Clean up and limit length
+                                product_info = re.sub(r'\s+', ' ', product_info)[:150]
+                                found_manus.add(f"{manu_name} — {product_info}")
+                            else:
+                                found_manus.add(line.strip())
+                        else:
+                            found_manus.add(line.strip())
+                        break
+        
+        # Strategy 2: Use PhraseMatcher for general detection (fallback)
+        if not found_manus:
+            doc = nlp(roof_text)
+            matches = matcher(doc)
+            for match_id, start, end in matches:
+                manu_name = doc[start:end].text
+                found_manus.add(manu_name)
+        
+        # Strategy 3: Context-based extraction for simple comma-separated lists (fallback)
+        if not found_manus:
+            context_pattern = re.compile(
+                r'(?:accepted|approved|specified|equivalent|or equal)\s*(?:roofing\s+)?(?:manufacturers?|brands?)\s*[:\s]+(.+?)(?:\.|\n\n|$)',
+                re.IGNORECASE | re.DOTALL
+            )
+            context_matches = context_pattern.findall(roof_text)
+            for match_text in context_matches:
+                for manu in roofing_manufacturers:
+                    if re.search(r'\b' + re.escape(manu) + r'\b', match_text, re.IGNORECASE):
                         found_manus.add(manu)
+        
         return sorted(list(found_manus))
     except Exception as e:
         st.warning(f"Error identifying manufacturers: {e}")
